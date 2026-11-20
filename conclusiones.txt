@@ -1,0 +1,75 @@
+CONCLUSIONES Y HALLAZGOS - PRUEBA DE CARGA DEL LOGIN (k6)
+=========================================================
+
+1. ALCANCE
+----------
+Prueba de carga sobre POST https://fakestoreapi.com/auth/login con 5 usuarios
+parametrizados desde CSV, carga constante de 25 TPS (el minimo exigido es 20)
+durante 3 minutos, con validacion de tiempo de respuesta (maximo 1,5 s) y tasa
+de error (menor al 3 %).
+
+2. DECISIONES DE DISENO
+-----------------------
+- Herramienta: k6. Scripts en JavaScript, faciles de versionar y revisar, y con
+  thresholds que hacen fallar la ejecucion automaticamente si no se cumplen los
+  criterios (util para integrarlo luego en CI).
+- Ejecutor constant-arrival-rate: mantiene los TPS fijos aunque el servicio se
+  vuelva lento. Un ejecutor por numero de usuarios virtuales reduciria los TPS
+  cuando suben las latencias y ocultaria el problema.
+- Se apunta a 25 TPS para tener margen sobre los 20 TPS exigidos.
+- Reparto rotativo de los usuarios del CSV, para que todos reciban carga por
+  igual y la prueba sea reproducible.
+- Se valida status 200/201, presencia de token y tiempo < 1,5 s en cada peticion.
+- Interpretacion del criterio "tiempo de respuesta maximo de 1,5 s": se usa el
+  percentil 95 menor a 1,5 s como criterio de aceptacion, y ademas cada
+  peticion se verifica contra 1,5 s y el maximo observado se reporta abajo.
+  Es una decision razonable porque un servicio publico compartido puede tener
+  picos aislados que no representan el comportamiento normal.
+
+3. RESULTADOS DE LA EJECUCION
+-----------------------------
+Datos de reports/summary.txt (ejecucion entregada):
+  - Fecha y version de k6: 2026-11-20 13:23, k6 v2.4.0 (windows/amd64)
+  - Duracion: 3 minutos a 25 TPS objetivo
+  - Peticiones totales: 4501
+  - TPS promedio alcanzados (http_reqs rate): 24,93      (requisito: >= 20)
+  - Tiempo de respuesta: promedio 425 ms | p(95) 507 ms | maximo 1400 ms
+    (requisito: maximo permitido 1500 ms)
+  - Tasa de error (http_req_failed): 0,00 %               (requisito: < 3 %)
+  - Checks exitosos: 100 % (13503 de 13503)
+  - Thresholds cumplidos: [x] http_req_duration  [x] http_req_failed
+                          [x] checks             [x] http_reqs
+
+4. HALLAZGOS
+------------
+  - El servicio de login responde 201 Created, no 200, cuando el login es
+    exitoso. En una primera ejecucion el check "status es 200" fallo en el
+    100 % de las peticiones (checks al 66,66 %, k6 termino con codigo 99),
+    aunque todas traian token. Se corrigio la validacion para aceptar 200/201.
+  - Los tiempos de respuesta fueron estables durante toda la prueba (mediana
+    ~415 ms, p(90) 479 ms) y no se observo degradacion con el tiempo.
+  - No hubo errores HTTP (0 respuestas 4xx/5xx, ningun 429 por limite de tasa)
+    al sostener 25 TPS.
+  - El pico maximo fue de 1,4 s: todas las peticiones quedaron por debajo de
+    1,5 s, pero el margen en el peor caso es pequeño (~100 ms).
+  - Los 5 usuarios del CSV obtuvieron token correctamente.
+  - Se necesitaron como maximo 25 usuarios virtuales concurrentes para
+    sostener la carga.
+
+5. CONCLUSION GENERAL
+---------------------
+El servicio de login soporta la carga requerida: sostuvo ~25 TPS (por encima
+de los 20 TPS exigidos) con 0 % de error (limite: 3 %) y todas las respuestas
+por debajo de 1,5 s (p(95) de 507 ms). La prueba cumple todos los criterios de
+aceptacion. Se recomienda vigilar los picos aislados de latencia, que llegaron
+a 1,4 s, cerca del limite.
+
+6. LIMITACIONES Y MEJORAS
+-------------------------
+- fakestoreapi.com es un servicio publico compartido y de demostracion: los
+  resultados dependen de la red del equipo que ejecuta la prueba y de la carga
+  del servicio en ese momento, por lo que no equivalen a un ambiente propio.
+- Mejoras posibles: prueba de estres (escalar TPS por etapas hasta encontrar el
+  punto de quiebre), prueba de resistencia (soak) de larga duracion, y casos
+  con credenciales invalidas para medir el comportamiento de errores.
+- Integrar la ejecucion en un pipeline de CI y publicar el reporte HTML.
